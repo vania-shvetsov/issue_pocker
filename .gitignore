@@ -1,0 +1,6 @@
+.cpcache/
+.shadow-cljs/
+node_modules/
+resources/public/static/js/
+.nrepl-port
+.DS_Store
