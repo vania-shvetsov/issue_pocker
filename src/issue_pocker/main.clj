@@ -1,5 +1,7 @@
 (ns issue-pocker.main
   (:require [org.httpkit.server :as ohs]
+            [clojure.string :as str]
+            [clojure.spec.alpha :as s]
             [reitit.ring :as rr]
             [ring.logger :as ring.logger]
             [ring.middleware.params :as params]
@@ -8,32 +10,91 @@
             [ring.middleware.json :as ring.json]
             [camel-snake-kebab.core :as csk]))
 
+(defn json-response [body]
+  {:status 200
+   :body body})
+
+(defn error-json-response [error]
+  {:status 400
+   :body {:error error}})
+
 (defn wrap-redirect-to-index [handler]
   (fn [req]
     (if (= (:uri req) "/")
       (handler (assoc req :uri "/index.html"))
       (handler req))))
 
-(defn create-new-game [{:keys [user-name issues]}])
+(def initial-db-state {:id-counter 0
+                       :games {}})
 
-(defn connect-to-game [{:keys [game-id user-name]}])
+(defonce db-a (atom initial-db-state))
 
-(defn vote [{:keys [user-id game-id issue-number rate]}])
+(comment
+  @db-a
+  )
+
+(defn reset-db []
+  (reset! db-a initial-db-state))
+
+(defn next-id! []
+  (let [db (swap! db-a update :id-counter inc)]
+    (:id-counter db)))
+
+(defn create-issues-from-array [arr]
+  (mapv (fn [text] {:text text
+                    :votes {}})
+        arr))
+
+(defn new-game [nickname issues]
+  (let [game-id (next-id!)
+        admin-player-id (next-id!)
+        new-game {:id game-id
+                  :current-issue 0
+                  :issues (create-issues-from-array issues)
+                  :players {admin-player-id {:id admin-player-id
+                                             :name nickname
+                                             :role :admin}}}]
+    (swap! db-a assoc-in [:games game-id] new-game)
+    new-game))
+
+(defn join-game [game-id nickname]
+  (let [game (get-in @db-a [:games game-id])
+        player (some (fn [[_ p]]
+                       (when (= (:name p) nickname) p))
+                     (:players game))]
+    (cond
+      (nil? game) {:error :no-such-game}
+      player      {:error :nickname-already-exists}
+      :else       (let [player-id (next-id!)
+                        new-player {:id player-id
+                                    :name nickname
+                                    :role :player}]
+                    (swap! db-a assoc-in [:games game-id :players player-id] new-player)
+                    (get-in @db-a [:games game-id])))))
+
+(defn vote [player-id game-id issue-idx rate])
 
 (defn next-issue [game-id])
 
-(defn create-new-game-handler [req]
-  {:status 200
-   :body {:new-game-id 3}})
+(defn new-game-handler [req]
+  (let [{:keys [nickname issues]} (:body req)
+        game (new-game nickname (str/split-lines issues))]
+    (json-response {:game game})))
 
-(defn connect-to-game-handler [req])
+(defn join-game-handler [req]
+  (let [{:keys [game-id nickname]} (:body req)
+        join-result (join-game game-id nickname)]
+    (if-let [error (:error join-result)]
+      (error-json-response error)
+      (json-response join-result))))
 
 (defn router []
   (rr/ring-handler
    (rr/router
     ["/api" {:middleware [[ring.json/wrap-json-body {:key-fn csk/->kebab-case-keyword}]
                           [ring.json/wrap-json-response {:key-fn csk/->snake_case_string}]]}
-     ["/create-new-game" {:post create-new-game-handler}]])
+     ["/create-new-game" {:post new-game-handler}]
+     ["/join-game" {:post join-game-handler}]])
    (constantly {:status 404, :body "404"})
    {:middleware [[params/wrap-params]
                  [keyword-params/wrap-keyword-params]
@@ -56,3 +117,7 @@
   (if dev?
     (reset! server (ohs/run-server #'dev-app {:port 3000}))
     (reset! server (ohs/run-server prod-app {:port 3000}))))
+
+(comment
+  (reset-db)
+  )
