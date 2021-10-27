@@ -1,21 +1,37 @@
 (ns issue-pocker.main
   (:require [org.httpkit.server :as ohs]
-            [clojure.string :as str]
             [reitit.ring :as rr]
             [ring.logger :as ring.logger]
-            [ring.middleware.params :as params]
+            [ring.middleware.params :as ring.params]
             [ring.middleware.resource :as ring.resource]
             [ring.middleware.keyword-params :as keyword-params]
             [ring.middleware.json :as ring.json]
-            [camel-snake-kebab.core :as csk]))
+            [ring.middleware.cookies :as ring.cookies]
+            [camel-snake-kebab.core :as csk]
+            [medley.core :as med]))
 
 (defn json-response [body]
   {:status 200
    :body body})
 
+(defn with-cookies [res cookies]
+  (assoc res :cookies cookies))
+
 (defn error-json-response [error]
   {:status 400
    :body {:error error}})
+
+(defn wrap-db [handler db]
+  (fn [req]
+    (handler (assoc req :db db))))
+
+(defn wrap-session [handler]
+  (fn [req]
+    (let [session-id (get-in req [:cookies "session_id" :value])
+          db (:db req)]
+      (if session-id
+        (handler (assoc req :session (get-in @db [:sessions session-id])))
+        (handler req)))))
 
 (defn wrap-redirect-to-index [handler]
   (fn [req]
@@ -26,15 +42,16 @@
 (def initial-db-state {:id-counter 0
                        :games {}})
 
-(defonce db-a (atom initial-db-state))
+(defonce app-db (atom initial-db-state))
 
 (defn reset-db []
-  (reset! db-a initial-db-state))
+  (reset! app-db initial-db-state))
 
-(defn next-id! []
-  (let [db (swap! db-a update :id-counter inc)]
+(defn gen-id! []
+  (let [db (swap! app-db update :id-counter inc)]
     (:id-counter db)))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (defn create-issues-from-array [arr]
   (mapv (fn [text] {:text text
@@ -53,83 +70,102 @@
                             (inc current-issue-idx))]
     (assoc game :current-issue-idx next-issue-idx)))
 
-
-(defn new-game [nickname issues]
-  (let [game-id         (next-id!)
-        admin-player-id (next-id!)
-        new-game        {:id game-id
+(defn new-game [db nickname issues]
+  (let [game-id         (gen-id!)
+        admin-player-id (gen-id!)
+        game            {:id game-id
                          :current-issue-idx 0
                          :issues (create-issues-from-array issues)
                          :players {admin-player-id {:id admin-player-id
                                                     :name nickname
-                                                    :role :admin}}}]
-    (swap! db-a assoc-in [:games game-id] new-game)
-    new-game))
+                                                    :role :admin}}}
+        session-id       (str (med/random-uuid))
+        session          {:id session-id
+                          :game-id game-id
+                          :player-id admin-player-id}]
+    (swap! db assoc-in [:games game-id] game)
+    (swap! db assoc-in [:sessions session-id] session)
+    {:session-id session-id
+     :game game}))
 
-(defn join-game [game-id nickname]
-  (let [game   (get-in @db-a [:games game-id])
+(defn join-game [db game-id nickname]
+  (let [game   (get-in @db [:games game-id])
         player (some (fn [[_ p]]
                        (when (= (:name p) nickname) p))
                      (:players game))]
     (cond
       (nil? game) {:error :no-such-game}
       player      {:error :nickname-already-exists}
-      :else       (let [player-id (next-id!)
+      :else       (let [player-id  (gen-id!)
                         new-player {:id player-id
                                     :name nickname
-                                    :role :player}]
-                    (swap! db-a assoc-in [:games game-id :players player-id] new-player)
-                    (get-in @db-a [:games game-id])))))
+                                    :role :player}
+                        session-id (str (med/random-uuid))
+                        session    {:id session-id
+                                    :game-id game-id
+                                    :player-id player-id}]
+                    (swap! db assoc-in [:games game-id :players player-id] new-player)
+                    (swap! db assoc-in [:sessions session-id] session)
+                    {:session-id session-id
+                     :game (get-in @db [:games game-id])}))))
 
-(defn vote [player-id game-id rate]
-  (let [{:keys [current-issue-idx] :as game} (get-in @db-a [:games game-id])
+(defn vote [db player-id game-id rate]
+  (let [{:keys [current-issue-idx] :as game} (get-in @db [:games game-id])
         game (assoc-in game [:issues current-issue-idx :votes player-id] rate)
         game (if (all-players-voted? game) (next-issue game) game)]
-    (swap! db-a assoc-in [:games game-id] game)
+    (swap! db assoc-in [:games game-id] game)
     game))
 
-(defn revote [game-id issue-idx]
-  (let [game (get-in @db-a [:games game-id])
+(defn revote [db game-id issue-idx]
+  (let [game (get-in @db [:games game-id])
         game (-> game
                  (assoc :current-issue-idx issue-idx)
                  (assoc-in [:issues issue-idx :votes] {}))]
-    (swap! db-a assoc-in [:games game-id] game)
+    (swap! db assoc-in [:games game-id] game)
     game))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(defn new-game-handler [req]
+(defn create-game-handler [req]
   (let [{:keys [nickname issues]} (:body req)
-        game (new-game nickname (str/split-lines issues))]
-    (json-response {:game game})))
+        {:keys [game session-id]} (new-game (:db req) nickname issues)]
+    (-> (json-response {:game game})
+        (with-cookies {"session_id" {:value session-id}}))))
 
-(defn join-game-handler [req]
+(defn join-handler [req]
   (let [{:keys [game-id nickname]} (:body req)
-        game-or-error (join-game game-id nickname)]
-    (if-let [error (:error game-or-error)]
+        {:keys [session-id game error]} (join-game (:db req) game-id nickname)]
+    (if error
       (error-json-response error)
-      (json-response {:game game-or-error}))))
+      (-> (json-response {:game game})
+          (with-cookies {"session_id" {:value session-id}})))))
 
 (defn vote-handler [req]
-  (let [{:keys [player-id game-id rate]} req
-        game (vote player-id game-id rate)]
+  ;; TODO: add permission check for player in this game
+  (let [{:keys [player-id game-id rate]} (:body req)
+        game (vote (:db req) player-id game-id rate)]
     (json-response {:game game})))
 
 (defn revote-handler [req]
-  (let [{:keys [game-id issue-idx]} req
-        game (revote game-id issue-idx)]
+  ;; TODO: add permission check for admin in this game
+  (let [{:keys [game-id issue-idx]} (:body req)
+        game (revote (:db req) game-id issue-idx)]
     (json-response {:game game})))
 
 (defn router []
   (rr/ring-handler
    (rr/router
-    ["/api" {:middleware [[ring.json/wrap-json-body {:key-fn csk/->kebab-case-keyword}]
+    ["/api" {:middleware [[wrap-db app-db]
+                          [wrap-session]
+                          [ring.json/wrap-json-body {:key-fn csk/->kebab-case-keyword}]
                           [ring.json/wrap-json-response {:key-fn csk/->snake_case_string}]]}
-     ["/new-game" {:post new-game-handler}]
-     ["/join"     {:post join-game-handler}]
+     ["/create-game" {:post create-game-handler}]
+     ["/join"     {:post join-handler}]
      ["/vote"     {:post vote-handler}]
      ["/revote"   {:post revote-handler}]])
    (constantly {:status 404, :body "404"})
-   {:middleware [[params/wrap-params]
+   {:middleware [[ring.params/wrap-params]
+                 [ring.cookies/wrap-cookies]
                  [keyword-params/wrap-keyword-params]
                  [ring.logger/wrap-with-logger]
                  [wrap-redirect-to-index]
@@ -152,9 +188,9 @@
     (reset! server (ohs/run-server prod-app {:port 3000}))))
 
 (comment
-  @db-a
+  @app-db
   (reset-db)
-  (new-game "Bob" ["issue 1" "issue 2"])
-  (vote 2 1 10)
-  (revote 1 0)
+  (new-game app-db "Bob" ["issue 1" "issue 2"])
+  (vote app-db 2 1 10)
+  (revote app-db 1 0)
   )
