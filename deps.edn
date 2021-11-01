@@ -12,7 +12,8 @@
         org.apache.logging.log4j/log4j-api  {:mvn/version "2.14.1"}
         org.apache.logging.log4j/log4j-core {:mvn/version "2.14.1"}
         cheshire/cheshire                   {:mvn/version "5.10.0"}
-        camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.2"}}
+        camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.2"}
+        mount/mount                         {:mvn/version "0.1.16"}}
 
  :aliases {:nrepl {:extra-paths ["dev"]
                    :jvm-opts    ^:replace ["-XX:-OmitStackTraceInFastThrow"
@@ -23,6 +24,11 @@
                                  cljfmt/cljfmt      {:mvn/version "0.8.0"}
                                  binaryage/devtools {:mvn/version "1.0.3"}
                                  re-frisk/re-frisk  {:mvn/version "1.5.1"}}}
+
+           :test {:extra-paths ["test"]
+                  :extra-deps {lambdaisland/kaocha  {:mvn/version "1.60.945"}
+                               healthsamurai/matcho {:mvn/version "0.3.8"}
+                               ring/ring-mock       {:mvn/version "0.4.0"}}}
 
            :ui {:extra-paths ["src_ui"]
                 :extra-deps  {org.clojure/clojurescript {:mvn/version "1.10.879"}

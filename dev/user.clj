@@ -2,6 +2,7 @@
   (:require [shadow.cljs.devtools.api :as shadow]
             [shadow.cljs.devtools.server :as shadow.server]
             [issue-pocker.main :as main]
+            [mount.core :as mount]
             [clojure.pprint :as pprint]))
 
 (defn restart-shadow []
@@ -11,6 +12,7 @@
 
 (comment
   (restart-shadow)
-  (main/start-server :dev? true)
+  (mount/start)
+  (mount/stop)
   (main/stop-server)
   )
