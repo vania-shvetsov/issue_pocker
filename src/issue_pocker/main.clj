@@ -161,8 +161,8 @@
   (rr/ring-handler
    (rr/router
     ["/api" {:middleware [[wrap-session]
-                          #_[ring.json/wrap-json-body {:key-fn csk/->kebab-case-keyword}]
-                          #_[ring.json/wrap-json-response {:key-fn csk/->snake_case_string}]]}
+                          [ring.json/wrap-json-body {:key-fn csk/->kebab-case-keyword}]
+                          [ring.json/wrap-json-response {:key-fn csk/->snake_case_string}]]}
      ["/create-game" {:post create-game-handler}]
      ["/join"     {:post join-handler}]
      ["/vote"     {:post vote-handler}]
