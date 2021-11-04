@@ -13,17 +13,18 @@
         org.apache.logging.log4j/log4j-core {:mvn/version "2.14.1"}
         cheshire/cheshire                   {:mvn/version "5.10.0"}
         camel-snake-kebab/camel-snake-kebab {:mvn/version "0.4.2"}
-        mount/mount                         {:mvn/version "0.1.16"}}
+        com.stuartsierra/component          {:mvn/version "1.0.0"}}
 
  :aliases {:nrepl {:extra-paths ["dev"]
                    :jvm-opts    ^:replace ["-XX:-OmitStackTraceInFastThrow"
                                            "-Dclojure.tools.logging.factory=clojure.tools.logging.impl/log4j2-factory"]
-                   :extra-deps  {nrepl/nrepl        {:mvn/version "0.8.3"}
-                                 cider/piggieback   {:mvn/version "0.5.2"}
-                                 cider/cider-nrepl  {:mvn/version "0.27.2"}
-                                 cljfmt/cljfmt      {:mvn/version "0.8.0"}
-                                 binaryage/devtools {:mvn/version "1.0.3"}
-                                 re-frisk/re-frisk  {:mvn/version "1.5.1"}}}
+                   :extra-deps  {nrepl/nrepl                 {:mvn/version "0.8.3"}
+                                 cider/piggieback            {:mvn/version "0.5.2"}
+                                 cider/cider-nrepl           {:mvn/version "0.27.2"}
+                                 cljfmt/cljfmt               {:mvn/version "0.8.0"}
+                                 binaryage/devtools          {:mvn/version "1.0.3"}
+                                 re-frisk/re-frisk           {:mvn/version "1.5.1"}
+                                 org.clojure/tools.namespace {:mvn/version "1.1.0"}}}
 
            :test {:extra-paths ["test"]
                   :extra-deps {lambdaisland/kaocha  {:mvn/version "1.60.945"}
