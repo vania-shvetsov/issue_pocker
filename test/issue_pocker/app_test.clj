@@ -117,6 +117,5 @@
                                      :votes []}]}}}
             (send-req (-> (mock/request :post "/api/revote")
                           (json-body {:game-id 0
-                                      :issue-idx 0})))))
-
-m/match
+                                      :issue-idx 0}))))
+  )
