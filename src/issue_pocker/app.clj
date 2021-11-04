@@ -52,7 +52,7 @@
                          :issues (create-issues-from-array issues)
                          :players {admin-player-id {:id admin-player-id
                                                     :name nickname
-                                                    :role "admin"}}}
+                                                    :role :admin}}}
         session-id       (str (med/random-uuid))
         session          {:id session-id
                           :game-id game-id
@@ -85,12 +85,14 @@
 
 (defn vote [{:keys [db]} player-id game-id rate]
   (let [{:keys [current-issue-idx] :as game} (get-in @db [:games game-id])
-        game (assoc-in game [:issues current-issue-idx :votes player-id] rate)]
+        game (assoc-in game [:issues current-issue-idx :votes player-id]
+                       {:player-id player-id
+                        :rate rate})]
     (swap! db assoc-in [:games game-id] game)
     game))
 
 (defn next-issue [{:keys [db]} game-id]
-  (let [game (get-in [:games game-id] @db)
+  (let [game (get-in @db [:games game-id])
         game (if (all-players-voted? game)
                (let [{:keys [current-issue-idx issues]} game
                      next-issue-idx (min (dec (count issues))
@@ -108,10 +110,22 @@
     (swap! db assoc-in [:games game-id] game)
     game))
 
+(defn entity-map->entity-vec [x sort-key]
+  (->> x vals (sort-by sort-key) vec))
+
+(defn game->dto [game]
+  (-> game
+      (update :players
+              #(entity-map->entity-vec % :id))
+      (update :issues
+              (partial mapv
+                       (fn [i]
+                         (update i :votes #(entity-map->entity-vec % :player-id)))))))
+
 (defn create-game-handler [req]
   (let [{:keys [nickname issues]} (:body req)
         {:keys [game session-id]} (new-game (:ctx req) nickname issues)]
-    (-> (ring.resp/response {:game game})
+    (-> (ring.resp/response {:game (game->dto game)})
         (ring.resp/set-cookie "session_id" session-id))))
 
 (defn join-handler [req]
@@ -119,24 +133,28 @@
         {:keys [session-id game error]} (join-game (:ctx req) game-id nickname)]
     (if error
       (ring.resp/bad-request {:error error})
-      (-> (ring.resp/response {:game game})
+      (-> (ring.resp/response {:game (game->dto game)})
           (ring.resp/set-cookie "session_id" session-id)))))
 
+(defn next-issue-handler [req]
+  ;; TODO: add permission, only admin of this game can switch to next issue
+  (let [{:keys [game-id]} (:body req)
+        game (next-issue (:ctx req) game-id)]
+    (ring.resp/response {:game (game->dto game)})))
+
 (defn vote-handler [req]
-  ;; TODO: add permission check for player in this game
+  ;; TODO: add permission, only players of this game can vote
   (let [{:keys [player-id game-id rate]} (:body req)
         game (vote (:ctx req) player-id game-id rate)]
-    (ring.resp/response {:game game})))
+    (ring.resp/response {:game (game->dto game)})))
 
 (defn revote-handler [req]
-  ;; TODO: add permission check for admin in this game
+  ;; TODO: add permission, only admin of this game can start revoting
   (let [{:keys [game-id issue-idx]} (:body req)
         game (revote (:ctx req) game-id issue-idx)]
-    (ring.resp/response {:game game})))
+    (ring.resp/response {:game (game->dto game)})))
 
-(defn ping-handler [_]
-  (-> (ring.resp/response "Hi")
-      (ring.resp/header "Content-Type" "text/html")))
+(def ping-handler (constantly (ring.resp/response {})))
 
 (defn test? [ctx]
   (= (get-in ctx [:config :env]) "test"))
@@ -153,6 +171,7 @@
                              [ring.json/wrap-json-response {:key-fn csk/->snake_case_string}])]}
       ["/create-game" {:post create-game-handler}]
       ["/join"        {:post join-handler}]
+      ["/next"        {:post next-issue-handler}]
       ["/vote"        {:post vote-handler}]
       ["/revote"      {:post revote-handler}]]])
    (constantly {:status 404, :body "404"})
@@ -162,3 +181,10 @@
                  [ring.logger/wrap-with-logger]
                  [wrap-redirect-to-index]
                  [ring.resource/wrap-resource "public"]]}))
+
+(comment
+  (def ctx {:db (atom {})})
+  @(:db ctx)
+  (new-game ctx "vasya" ["is1" "is2"])
+  (join-game ctx 0 "alena")
+  )

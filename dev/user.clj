@@ -34,8 +34,6 @@
 
 (comment
   (restart-shadow)
-  (init)
-  (start)
-  (stop)
+  (go)
   (reset)
   )
