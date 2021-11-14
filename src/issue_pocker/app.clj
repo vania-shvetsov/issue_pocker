@@ -6,9 +6,13 @@
             [ring.middleware.keyword-params :as keyword-params]
             [ring.middleware.json :as ring.json]
             [ring.middleware.cookies :as ring.cookies]
+            [ring.middleware.anti-forgery :as ring.af]
+            [ring.middleware.anti-forgery.session :as ring.af.session]
+            [ring.middleware.session :as ring.session]
+            [ring.middleware.session.memory :as ring.session.mem]
             [ring.util.response :as ring.resp]
             [camel-snake-kebab.core :as csk]
-            [medley.core :as med]))
+            [selmer.parser :as sp]))
 
 (defn get-id [db]
   (let [id (or (:next-id @db) 0)]
@@ -19,24 +23,16 @@
   (fn [req]
     (handler (assoc req :ctx ctx))))
 
-(defn wrap-session [handler {:keys [db]}]
-  (fn [req]
-    (let [session-id (get-in req [:cookies "session_id" :value])
-          session (get-in @db [:sessions session-id])]
-      (if session
-        (handler (assoc req :session session))
-        (handler req)))))
-
 (defn wrap-redirect-to-index [handler]
-  (fn [req]
-    (if (= (:uri req) "/")
-      (handler (assoc req :uri "/index.html"))
+  (fn [{:keys [uri anti-forgery-token] :as req}]
+    (if (or (= uri "/") (= uri "/index.html"))
+      (-> {:status 200
+           :body (sp/render-file "public/index.html" {:csrf-token anti-forgery-token})}
+          (ring.resp/content-type "text/html"))
       (handler req))))
 
 (defn create-issues-from-array [arr]
-  (mapv (fn [text] {:text text
-                    :votes {}})
-        arr))
+  (mapv (fn [text] {:text text :votes {}}) arr))
 
 (defn all-players-voted? [game]
   (let [{:keys [current-issue-idx issues players]} game
@@ -52,15 +48,9 @@
                          :issues (create-issues-from-array issues)
                          :players {admin-player-id {:id admin-player-id
                                                     :name nickname
-                                                    :role :admin}}}
-        session-id       (str (med/random-uuid))
-        session          {:id session-id
-                          :game-id game-id
-                          :player-id admin-player-id}]
+                                                    :role :admin}}}]
     (swap! db assoc-in [:games game-id] game)
-    (swap! db assoc-in [:sessions session-id] session)
-    {:session-id session-id
-     :game game}))
+    [game]))
 
 (defn join-game [{:keys [db]} game-id nickname]
   (let [game   (get-in @db [:games game-id])
@@ -68,20 +58,14 @@
                        (when (= (:name p) nickname) p))
                      (:players game))]
     (cond
-      (nil? game) {:error :no-such-game}
-      player      {:error :nickname-already-exists}
+      (nil? game) [nil :no-such-game]
+      player      [nil :nickname-already-exists]
       :else       (let [player-id  (get-id db)
                         new-player {:id player-id
                                     :name nickname
-                                    :role :player}
-                        session-id (str (med/random-uuid))
-                        session    {:id session-id
-                                    :game-id game-id
-                                    :player-id player-id}]
+                                    :role :player}]
                     (swap! db assoc-in [:games game-id :players player-id] new-player)
-                    (swap! db assoc-in [:sessions session-id] session)
-                    {:session-id session-id
-                     :game (get-in @db [:games game-id])}))))
+                    [(get-in @db [:games game-id])]))))
 
 (defn vote [{:keys [db]} player-id game-id rate]
   (let [{:keys [current-issue-idx] :as game} (get-in @db [:games game-id])
@@ -89,7 +73,7 @@
                        {:player-id player-id
                         :rate rate})]
     (swap! db assoc-in [:games game-id] game)
-    game))
+    [game]))
 
 (defn next-issue [{:keys [db]} game-id]
   (let [game (get-in @db [:games game-id])
@@ -100,7 +84,7 @@
                  (assoc game :current-issue-idx next-issue-idx))
                game)]
     (swap! db assoc-in [:games game-id] game)
-    game))
+    [game]))
 
 (defn revote [{:keys [db]} game-id issue-idx]
   (let [game (get-in @db [:games game-id])
@@ -108,7 +92,7 @@
                  (assoc :current-issue-idx issue-idx)
                  (assoc-in [:issues issue-idx :votes] {}))]
     (swap! db assoc-in [:games game-id] game)
-    game))
+    [game]))
 
 (defn entity-map->entity-vec [x sort-key]
   (->> x vals (sort-by sort-key) vec))
@@ -116,75 +100,93 @@
 (defn game->dto [game]
   (-> game
       (update :players
-              #(entity-map->entity-vec % :id))
+              entity-map->entity-vec :id)
       (update :issues
-              (partial mapv
-                       (fn [i]
-                         (update i :votes #(entity-map->entity-vec % :player-id)))))))
+              (partial mapv #(update % :votes entity-map->entity-vec :player-id)))))
+
+;;
+
+(defn add-game-id-to-session [res req game-id]
+  (assoc res :session (update (:session req) :game-ids conj game-id)))
 
 (defn create-game-handler [req]
   (let [{:keys [nickname issues]} (:body req)
-        {:keys [game session-id]} (new-game (:ctx req) nickname issues)]
+        [game] (new-game (:ctx req) nickname issues)]
     (-> (ring.resp/response {:game (game->dto game)})
-        (ring.resp/set-cookie "session_id" session-id))))
+        (add-game-id-to-session req (:id game)))))
 
+;; TODO: add ws update
 (defn join-handler [req]
   (let [{:keys [game-id nickname]} (:body req)
-        {:keys [session-id game error]} (join-game (:ctx req) game-id nickname)]
+        [game error] (join-game (:ctx req) game-id nickname)]
     (if error
       (ring.resp/bad-request {:error error})
       (-> (ring.resp/response {:game (game->dto game)})
-          (ring.resp/set-cookie "session_id" session-id)))))
+          (add-game-id-to-session req (:id game))))))
 
+;; TODO: add ws update
+;; TODO: add permission, only admin of this game can switch to next issue
 (defn next-issue-handler [req]
-  ;; TODO: add permission, only admin of this game can switch to next issue
   (let [{:keys [game-id]} (:body req)
-        game (next-issue (:ctx req) game-id)]
+        [game] (next-issue (:ctx req) game-id)]
     (ring.resp/response {:game (game->dto game)})))
 
+;; TODO: add ws update
+;; TODO: add permission, only players of this game can vote
 (defn vote-handler [req]
-  ;; TODO: add permission, only players of this game can vote
   (let [{:keys [player-id game-id rate]} (:body req)
-        game (vote (:ctx req) player-id game-id rate)]
+        [game] (vote (:ctx req) player-id game-id rate)]
     (ring.resp/response {:game (game->dto game)})))
 
+;; TODO: add ws update
+;; TODO: add permission, only admin of this game can start revoting
 (defn revote-handler [req]
-  ;; TODO: add permission, only admin of this game can start revoting
   (let [{:keys [game-id issue-idx]} (:body req)
-        game (revote (:ctx req) game-id issue-idx)]
+        [game] (revote (:ctx req) game-id issue-idx)]
     (ring.resp/response {:game (game->dto game)})))
 
-(def ping-handler (constantly (ring.resp/response {})))
-
-(defn test? [ctx]
+(defn test-env? [ctx]
   (= (get-in ctx [:config :env]) "test"))
 
-(defn app [ctx]
+(defn app [{:keys [ws] :as ctx}]
   (rr/ring-handler
    (rr/router
-    [["/ping" {:get ping-handler}]
-     ["/api" {:middleware [[wrap-ctx ctx]
-                           [wrap-session ctx]
-                           (when-not (test? ctx)
-                             [ring.json/wrap-json-body {:key-fn csk/->kebab-case-keyword}])
-                           (when-not (test? ctx)
-                             [ring.json/wrap-json-response {:key-fn csk/->snake_case_string}])]}
+    [["/api" {:middleware
+              [(when-not (test-env? ctx)
+                 [ring.json/wrap-json-body {:key-fn csk/->kebab-case-keyword}])
+               (when-not (test-env? ctx)
+                 [ring.json/wrap-json-response {:key-fn csk/->snake_case_string}])]}
       ["/create-game" {:post create-game-handler}]
       ["/join"        {:post join-handler}]
       ["/next"        {:post next-issue-handler}]
       ["/vote"        {:post vote-handler}]
-      ["/revote"      {:post revote-handler}]]])
+      ["/revote"      {:post revote-handler}]]
+     ["/ping" {:get (constantly (ring.resp/response {}))}]
+     ["/ws" {:get (:handshake ws)
+             :post (:ajax-post ws)}]])
    (constantly {:status 404, :body "404"})
-   {:middleware [[ring.params/wrap-params]
+   {:middleware [[wrap-ctx ctx]
+                 [ring.params/wrap-params]
                  [ring.cookies/wrap-cookies]
                  [keyword-params/wrap-keyword-params]
                  [ring.logger/wrap-with-logger]
+                 [ring.session/wrap-session
+                  {:store (ring.session.mem/memory-store (:sessions ctx))
+                   :cookie-name "sid"
+                   :cookie-attrs {:max-age 7200 :same-site :lax}}]
+                 (when-not (test-env? ctx)
+                   [ring.af/wrap-anti-forgery {:strategy (ring.af.session/session-strategy)}])
                  [wrap-redirect-to-index]
                  [ring.resource/wrap-resource "public"]]}))
 
-(comment
-  (def ctx {:db (atom {})})
-  @(:db ctx)
-  (new-game ctx "vasya" ["is1" "is2"])
-  (join-game ctx 0 "alena")
-  )
+(defn ws-app [msg]
+  (let [req (:ring-req msg)
+        sid (:session/key req)
+        sessions (get-in req [:ctx :sessions])
+        [event-name client-id] (:event msg)]
+    (condp = event-name
+      :chsk/uidport-open
+      (swap! sessions update-in [sid :ws-ids] conj client-id)
+      :chsk/uidport-close
+      (swap! sessions update-in [sid :ws-ids] (partial remove #(= % client-id)))
+      nil)))

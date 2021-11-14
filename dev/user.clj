@@ -2,8 +2,7 @@
   (:require [shadow.cljs.devtools.api :as shadow]
             [shadow.cljs.devtools.server :as shadow.server]
             [clojure.pprint :as pprint]
-            [clojure.tools.namespace.repl :refer [refresh]]
-            [com.stuartsierra.component :as component]
+            [com.stuartsierra.component.repl :refer [reset set-init start stop system]]
             [issue-pocker.core :as core]))
 
 (defn restart-shadow []
@@ -11,29 +10,21 @@
   (shadow.server/start!)
   (shadow/watch :app))
 
-(def system nil)
+(defn run-system [_]
+  (core/system {:port 3000
+                :env "dev"}))
 
-(defn init []
-  (alter-var-root #'system
-    (constantly (core/system {:port 3000}))))
-
-(defn start []
-  (alter-var-root #'system component/start))
-
-(defn stop []
-  (alter-var-root #'system
-    (fn [s] (when s (component/stop s)))))
-
-(defn go []
-  (init)
-  (start))
-
-(defn reset []
-  (stop)
-  (refresh :after 'user/go))
+(set-init run-system)
 
 (comment
   (restart-shadow)
-  (go)
+  (start)
+  (stop)
   (reset)
+  (def send (get-in system [:ws :send!]))
+  (get-in system [:ws :connected-uids])
+  (let [sessions (get-in system [:sessions])]
+    (swap! sessions assoc "test" {:value 1}))
+  (get-in system [:sessions])
+  (update system :sessions reset! {})
   )

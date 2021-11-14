@@ -1,4 +1,4 @@
-(ns issue-pocker.main-test
+(ns issue-pocker.app-test
   (:require [clojure.test :refer [deftest testing use-fixtures]]
             [matcho.core :as m]
             [ring.mock.request :as mock]
@@ -10,16 +10,19 @@
       (assoc-in [:headers "Content-Type"] "application/json")))
 
 (defonce test-db (atom {}))
+(defonce test-sessions (atom {}))
 
 (defn send-req [req]
   (let [handler (sut/app {:config {:env "test"}
-                          :db test-db})]
+                          :db test-db
+                          :sessions test-sessions})]
     (handler req)))
 
 (use-fixtures
   :each
   (fn [t]
     (reset! test-db {})
+    (reset! test-sessions {})
     (t)))
 
 (deftest create-new-game-test
