@@ -15,7 +15,9 @@
 (defn send-req [req]
   (let [handler (sut/app {:config {:env "test"}
                           :db test-db
-                          :sessions test-sessions})]
+                          :sessions test-sessions
+                          :ws {:handshake #()
+                               :ajax-post #()}})]
     (handler req)))
 
 (use-fixtures
