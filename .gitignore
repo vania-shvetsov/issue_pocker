@@ -5,3 +5,6 @@ resources/public/static/js/
 .nrepl-port
 .DS_Store
 req.http
+.lsp
+.clj-kondo
+.calva
